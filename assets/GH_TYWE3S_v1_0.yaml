@@ -1,0 +1,369 @@
+esphome:
+  name: Rce-2-wf
+  friendly_name: Умная розетка #Имя устройства
+  on_boot:
+    priority: 600
+    then:
+    - delay: 2s
+    - lambda: |-
+        if (id(protection_triggered)) {
+          id(protection_status).publish_state("⚠️ Сработала");
+          id(protection_led).execute();
+        } else {
+          id(protection_status).publish_state("✅ Включена");
+          
+          if (id(power_on_mode)) {
+            id(sequential_start).execute();
+          } else {
+            id(all_sockets_off).execute();
+          }
+          
+          id(update_led).execute();
+        }
+
+esp8266:
+  board: esp01_1m
+
+logger:
+  baud_rate: 0
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  min_auth_mode: WPA2
+  ap:
+    ssid: "Rce-2-Wf Fallback Hotspot"
+    password: "B1RhUxQDaSg5" #Ваше значение
+  on_connect:
+    then:
+      - script.stop: wifi_lost_blink
+      - output.turn_off: led_output
+      - script.execute: update_led
+      
+  on_disconnect:
+    then:
+      - script.execute: wifi_lost_blink
+
+captive_portal:
+
+api:
+  encryption:
+    key: "i17MPaLSx/ARjuApD1glgMJq/WwbY36+2s3wkcel03w=" #Ваше значение
+
+ota:
+  - platform: esphome
+    password: "975d39fba7c9a5653d6b2da99f195f8a" #Ваше значение
+
+globals:
+  - id: sequential_running
+    type: bool
+    initial_value: 'false'
+    restore_value: no
+  - id: protection_triggered
+    type: bool
+    initial_value: 'false'
+    restore_value: yes
+  - id: power_on_mode
+    type: bool
+    restore_value: yes
+    initial_value: 'false'
+  - id: led_mode 
+    type: bool
+    restore_value: yes
+    initial_value: 'false'
+  - id: button_press_time
+    type: int
+    initial_value: '0'
+    restore_value: no
+
+output:
+  - platform: gpio
+    pin: GPIO1
+    id: led_output
+    inverted: true
+
+script:
+  - id: wifi_lost_blink
+    mode: queued
+    then:
+      - while:
+          condition:
+            lambda: 'return !network::is_connected() && id(led_mode);'
+          then:
+            - output.turn_on: led_output
+            - delay: 200ms
+            - output.turn_off: led_output
+            - delay: 200ms
+
+  - id: protection_led
+    then:
+      - while:
+          condition:
+            lambda: 'return id(protection_triggered) == true;'
+          then:
+            - output.turn_on: led_output
+            - delay: 125ms
+            - output.turn_off: led_output
+            - delay: 125ms
+            
+  - id: update_led
+    then:
+      - lambda: |-
+          bool any_socket_on = id(relay_1).state || id(relay_2).state || id(relay_3).state || id(relay_4).state;
+
+          if (id(led_mode) && any_socket_on) {
+            id(led_output).turn_on();
+          }
+          else {
+            id(led_output).turn_off();
+          }
+
+  - id: sequential_start
+    then:
+      - lambda: |-
+          if (id(sequential_running) || id(protection_triggered)) return;
+          id(sequential_running) = true;
+      - switch.turn_on: relay_1
+      - delay: 200ms
+      - switch.turn_on: relay_2
+      - delay: 200ms
+      - switch.turn_on: relay_3
+      - delay: 200ms
+      - switch.turn_on: relay_4
+      - lambda: |-
+          id(sequential_running) = false;
+      - script.execute: update_led
+
+  - id: all_sockets_off
+    then:
+      - switch.turn_off: relay_1
+      - switch.turn_off: relay_2
+      - switch.turn_off: relay_3
+      - switch.turn_off: relay_4
+      - script.execute: update_led
+
+  - id: power_mode_indication_on
+    then:
+      - repeat:
+          count: 4
+          then:
+            - output.turn_on: led_output
+            - delay: 100ms
+            - output.turn_off: led_output
+            - delay: 200ms
+      - script.execute: update_led
+
+  - id: power_mode_indication_off
+    then:
+      - repeat:
+          count: 2
+          then:
+            - output.turn_on: led_output
+            - delay: 100ms
+            - output.turn_off: led_output
+            - delay: 200ms
+      - script.execute: update_led
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO16
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms    
+    name: "Кнопка"
+    internal: true
+    on_press:
+      then:
+        - lambda: |-
+            id(button_press_time) = millis();
+    on_release:
+      then:
+        - lambda: |-
+            int press_duration = millis() - id(button_press_time);
+            if (press_duration >= 3000) {
+              if (id(power_on_mode)) {
+                id(power_on_mode) = false;
+                id(power_mode_indication_off).execute();
+              } else {
+                id(power_on_mode) = true;
+                id(power_mode_indication_on).execute();
+              }
+            } else {
+              if (id(protection_triggered)) {
+                id(protection_triggered) = false;
+                id(protection_status).publish_state("✅ Включена");
+                id(protection_led).stop();
+              } else if (id(relay_1).state || id(relay_2).state || id(relay_3).state || id(relay_4).state) {
+                id(all_sockets_off).execute();
+              } else {
+                id(sequential_start).execute();
+              }
+            }
+
+sensor:
+  - platform: hlw8012
+    model: BL0937
+    sel_pin:
+      number: GPIO12
+      inverted: true
+    cf_pin: GPIO4
+    cf1_pin: GPIO5
+    
+    voltage:
+      name: "Напряжение"
+      id: voltage
+      unit_of_measurement: V
+      accuracy_decimals: 1
+      
+    current:
+      name: "Сила тока"
+      id: current
+      unit_of_measurement: A
+      accuracy_decimals: 2
+      filters:
+        - sliding_window_moving_average:
+            window_size: 3
+            send_every: 1
+      on_value:
+        then:
+          - lambda: |-
+              float current_value = x;
+              float voltage_value = id(voltage).state;
+              
+              bool any_on = id(relay_1).state || id(relay_2).state || id(relay_3).state || id(relay_4).state;
+
+              if (any_on) {
+                if (current_value > 16.0) {
+                  id(all_sockets_off).execute();
+                  id(protection_triggered) = true;
+                  id(protection_status).publish_state("⚠️ Сработала");
+                  id(protection_led).execute();
+                }
+                
+                if (voltage_value < 190.0 || voltage_value > 250.0) {
+                  id(all_sockets_off).execute();
+                  id(protection_triggered) = true;
+                  id(protection_status).publish_state("⚠️ Сработала");
+                  id(protection_led).execute();
+                }
+              }
+      
+    power:
+      name: "Мощность"
+      id: power
+      unit_of_measurement: W
+      accuracy_decimals: 1
+      filters:
+        - sliding_window_moving_average:
+            window_size: 3
+            send_every: 1
+      
+    energy:
+      name: "Энергия"
+      id: energy
+      unit_of_measurement: kWh
+      accuracy_decimals: 3
+      
+    update_interval: 1s
+    voltage_divider: 1711 #Ваше значение
+    current_resistor: 0.001 #Ваше значение
+
+text_sensor:
+  - platform: template
+    name: "Защита"
+    id: protection_status
+    icon: "mdi:shield"
+    lambda: |-
+      if (id(protection_triggered)) return std::string("⚠️ Сработала");
+      return std::string("✅ Включена");
+
+switch:
+  - platform: gpio
+    name: "Розетка 1"
+    pin: GPIO15
+    id: relay_1
+    on_turn_on:
+      then:
+        - script.execute: update_led
+    on_turn_off:
+      then:
+        - script.execute: update_led
+        
+  - platform: gpio
+    name: "Розетка 2"
+    pin: GPIO13
+    id: relay_2
+    on_turn_on:
+      then:
+        - script.execute: update_led
+    on_turn_off:
+      then:
+        - script.execute: update_led
+        
+  - platform: gpio
+    name: "Розетка 3"
+    pin: GPIO14
+    id: relay_3
+    on_turn_on:
+      then:
+        - script.execute: update_led
+    on_turn_off:
+      then:
+        - script.execute: update_led
+        
+  - platform: gpio
+    name: "Розетка 4"
+    pin: GPIO3
+    id: relay_4
+    on_turn_on:
+      then:
+        - script.execute: update_led
+    on_turn_off:
+      then:
+        - script.execute: update_led
+
+  - platform: template
+    name: "Все розетки"
+    id: all_sockets
+    lambda: |-
+      return id(relay_1).state && id(relay_2).state && id(relay_3).state && id(relay_4).state;
+    turn_on_action:
+      - script.execute: sequential_start
+    turn_off_action:
+      - script.execute: all_sockets_off
+
+  - platform: template
+    name: "Режим индикации"
+    id: indicator_mode
+    icon: "mdi:led-on"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      then:
+        - lambda: |-
+            id(led_mode) = true;
+        - script.execute: update_led
+    turn_off_action:
+      then:
+        - lambda: |-
+            id(led_mode) = false;
+        - script.execute: update_led
+
+  - platform: template
+    name: "Питание при включении"
+    id: indicator_power
+    icon: "mdi:power-settings"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      then:
+        - lambda: |-
+            id(power_on_mode) = true;
+        - script.execute: power_mode_indication_on
+    turn_off_action:
+      then:
+        - lambda: |-
+            id(power_on_mode) = false;
+        - script.execute: power_mode_indication_off
