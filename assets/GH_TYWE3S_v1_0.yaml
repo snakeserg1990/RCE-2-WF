@@ -33,7 +33,7 @@ wifi:
   password: !secret wifi_password
   min_auth_mode: WPA2
   ap:
-    ssid: "Ekf-Rce-2-Wf Fallback Hotspot"
+    ssid: "Rce-2-Wf Fallback Hotspot"
     password: "B1RhUxQDaSg5" #Ваше значение
   on_connect:
     then:
